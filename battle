@@ -1,0 +1,5 @@
+#!/Users/siman/.rbenv/shims/ruby
+require_relative 'main.rb'
+
+MaruBatsu.new
+
