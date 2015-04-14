@@ -60,6 +60,32 @@ unsigned long long xor128(){
 // 探索済みのボードを調べる用
 int checkBoard[BOARD_MAX];
 
+// 1手の情報を保持する構造体
+typedef struct child{
+  int z;        // 手の場所
+  int games;    // この手を選んだ回数
+  double rate;  // この手の勝率
+  bool leaf;    // 末端に到達しているかどうか
+  int next;     // この手を打った後のノード番号
+} CHILD;
+
+// +1はPASS用
+const int MAX_CHILD = BOARD_SIZE * BOARD_SIZE + 1;
+
+// 一つの局面状態(ノード)を保持する構造体
+typedef struct node{
+  int childNum;           // 子局面の数
+  CHILD child[MAX_CHILD];
+  int childGamesSum;           // 子局面の回数の合計
+} NODE;
+
+const int NODE_MAX = 10000; // 最大登録ノード数
+NODE node[NODE_MAX];
+
+int nodeNum = 0;            // 登録ノード数
+const int NODE_EMPTY = -1;  // 次のノードが存在しない場合
+const int ILLEGAL_Z = -1;   // ルール違反の手
+
 /*
  * 二次元座標を一次元に変換する
  *   y: y座標
@@ -300,7 +326,7 @@ int playout(int mark){
   int m = mark;
 
   for(int i = 0; i < loopMax; i++){
-    int putList[BOARD_MAX];
+    vector<int> putList;
     int listSize = 0;
 
     // 候補手を全て列挙
@@ -311,8 +337,13 @@ int playout(int mark){
         // 既に印がある場合は候補から外す
         if(board[z] != EMPTY) continue;
 
-        putList[listSize] = z;
+        putList.push_back(z);
         listSize += 1;
+
+        if(z == 4){
+          putList.push_back(z);
+          listSize += 1;
+        }
       }
     }
 
@@ -393,6 +424,46 @@ int selectBestPut(int mark){
   return bestZ;
 }
 
+void addChild(NODE *pN, int z){
+  int n = pN->childNum;
+  pN->child[n].z      = z;
+  pN->child[n].games  = 0;
+  pN->child[n].rate   = 0;
+  pN->child[n].next   = NODE_EMPTY;
+  pN->childNum += 1;
+}
+
+// 新しい局面を作成する
+int createNode(){
+  // 既に局面が限界値になっている場合は局面を増やさない
+  if(nodeNum == NODE_MAX){
+    printf("node over err\n");
+    exit(0);
+  }
+  
+  NODE *pN = &node[nodeNum];
+  pN->childNum = 0;
+  pN->childGamesSum = 0;
+
+  for(int y = 0; y < BOARD_SIZE; y++){
+    for(int x = 0; x < BOARD_SIZE; x++){
+      int z = getZ(y,x);
+
+      if(board[z] != EMPTY) continue;
+      addChild(pN, z);
+    }
+  }
+
+  // 子が作れない場合はエラーを返す
+  if(pN->childNum == 0){
+    return -1;
+  }
+
+  nodeNum += 1;
+
+  return nodeNum-1; // 作成したノード番号を返す
+}
+
 void printBoard(){
   cout << "+-+-+-+" << endl;
 
@@ -414,13 +485,131 @@ void printBoard(){
   cout << endl;
 }
 
+/*
+ * UCBが一番高い手を選ぶ(次にプレイアウトを行う手筋)
+ */
+int selectBestUcb(int nodeId){
+  NODE *pN = &node[nodeId];
+  int select = -1;
+  double maxUcb = -999;
+
+  for(int i = 0; i < pN->childNum; i++){
+    CHILD *c = &pN->child[i];
+
+    // 不法な手である場合はスキップ
+    if(c->z == ILLEGAL_Z) continue;
+    double ucb = 0;
+
+    // プレイアウトの回数が0の場合
+    if(c->games == 0){
+      ucb = 10000 + xor128()%100;   // 未展開
+    }else{
+      const double C = 0.31;
+      ucb = c->rate + C * sqrt(log(pN->childGamesSum) / c->games);
+    }
+
+    if(ucb > maxUcb){
+      maxUcb = ucb;
+      select = i;
+    }
+  }
+
+  return select;
+}
+
+int searchUct(int mark, int nodeId){
+  NODE *pN = &node[nodeId];
+  CHILD *c = NULL;
+  int win = 0, select;
+
+  while(true){
+    select = selectBestUcb(nodeId);
+
+    if(select == -1) break;
+
+    // 選ばれた子ノード
+    c = &pN->child[select];
+    int z = c->z;
+    int err = putMark(z, mark);
+
+    if(err == 0){
+      break;
+    }
+    c->z = ILLEGAL_Z;
+  }
+
+  // 候補手がない場合は展開が出来ないのでその場で評価
+  if(c->leaf || c->games <= 100){
+    win = -playout(flipMark(mark));
+  }else{
+    // 新たにノードを展開する
+    if(c->next == NODE_EMPTY){
+      c->next = createNode();
+    }
+    if(c->next != NODE_EMPTY){
+      win = -searchUct(flipMark(mark), c->next);
+    }else{
+      win = -playout(flipMark(mark));
+      c->leaf = true;
+    }
+  }
+
+  // 勝率を更新
+  c->rate = (c->rate * c->games + win) / (c->games + 1);
+  // この手の回数も更新
+  c->games++;
+  // 合計回数も更新
+  pN->childGamesSum += 1;
+
+  return win;
+}
+
+int selectBestUct(int mark){
+  nodeNum = 0;
+  int rootNodeId = createNode();  // root局面のノードを作成
+
+  int uctLoop = 100000;       // uctを繰り返す回数
+  
+  for(int i = 0; i < uctLoop; i++){
+    // 局面を保存
+    memcpy(boardCopy, board, sizeof(board));
+
+    searchUct(mark, rootNodeId);
+
+    // 局面を戻す
+    memcpy(board, boardCopy, sizeof(boardCopy));
+  }
+
+  int bestI = -1;
+  int maxValue = -999;
+  NODE *pN = &node[rootNodeId];
+
+  for(int i = 0; i < pN->childNum; i++){
+    CHILD *c = &pN->child[i];
+    printf("z = %d, rate = %.4f, win = %.2f, games = %d\n", c->z, c->rate, (c->games * c->rate), c->games);
+
+    if(c->games > maxValue){
+      bestI = i;  // 最大回数の手を選ぶ
+      maxValue = c->games;
+    }
+  }
+
+  int retZ = pN->child[bestI].z;
+
+  //printf("z = %d, rate = %.4f, games = %d\n", retZ, pN->child[bestI].rate, maxValue);
+
+  return retZ;
+}
+
+
 
 int main(){
   int mark = O;
 
   while(true){
     playoutCount = 0;
-    int z = selectBestPut(mark);
+    int z = selectBestUct(mark);
+    //int z = selectBestPut(mark);
 
     int err = putMark(z, mark);
     if(err != 0){

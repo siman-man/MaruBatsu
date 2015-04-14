@@ -12,7 +12,7 @@ class MaruBatsu
     @board = Array.new(HEIGHT){ Array.new(WIDTH, '-') }
     @turn = 0
 
-    @aiA = IO.popen('ruby sample.rb', 'r+')
+    @aiA = IO.popen('ruby ai.rb', 'r+')
     @aiB = IO.popen('ruby sample.rb', 'r+')
 
     run
